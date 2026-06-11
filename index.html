@@ -355,7 +355,8 @@ document.getElementById('loginEmail').addEventListener('keydown',e=>{if(e.key===
 // ══════════════════════════════════════
 // CSV FETCH
 // ══════════════════════════════════════
-const CSV_URL='https://docs.google.com/spreadsheets/d/e/2PACX-1vQTYrMbm1DMrtg4KsqfPoPnQmXigKS2ajIcrbBruAcooqMe583sHxnpE2PEFnkB2Q/pub?gid=1892603319&single=true&output=csv';
+const CSV_URL     = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQTYrMbm1DMrtg4KsqfPoPnQmXigKS2ajIcrbBruAcooqMe583sHxnpE2PEFnkB2Q/pub?gid=1892603319&single=true&output=csv';
+const CSV_URL_RET = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQTYrMbm1DMrtg4KsqfPoPnQmXigKS2ajIcrbBruAcooqMe583sHxnpE2PEFnkB2Q/pub?gid=2121843322&single=true&output=csv';
 
 function parseCSV(text){
   const rows=[];
@@ -430,18 +431,29 @@ async function loadData(){
   showBanner('bannerErro',false);
   showBanner('bannerVencido',false);
   try{
-    const resp=await fetch(CSV_URL,{cache:'no-cache'});
-    if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
-    const text=await resp.text();
-    if(text.includes('Host not in allowlist'))throw new Error('A planilha não está acessível publicamente. Verifique as configurações de publicação no Google Sheets.');
-    processCSV(text);
+    const [respAdm, respRet] = await Promise.all([
+      fetch(CSV_URL,     {cache:'no-cache'}),
+      fetch(CSV_URL_RET, {cache:'no-cache'}),
+    ]);
+    if(!respAdm.ok) throw new Error(`HTTP ${respAdm.status} (ADM TEMP.)`);
+    const textAdm = await respAdm.text();
+    if(textAdm.includes('Host not in allowlist')) throw new Error('A planilha não está acessível publicamente. Verifique as configurações de publicação no Google Sheets.');
+
+    // RET. ADM. — não bloqueia se falhar
+    let textRet = '';
+    if(respRet.ok){
+      textRet = await respRet.text();
+      if(textRet.includes('Host not in allowlist')) textRet = '';
+    }
+
+    processCSV(textAdm, textRet);
   }catch(err){
     document.getElementById('loadingOverlay').style.display='none';
     showBanner('bannerErro',true,`<strong>Erro ao carregar dados do Google Sheets:</strong> ${err.message}<br><small>Verifique se a aba ADM TEMP. está publicada como CSV e tente novamente clicando em ↻ Atualizar.</small>`);
   }
 }
 
-function processCSV(text){
+function processCSV(text, textRet){
   const rows=parseCSV(text);
 
   // Encontra a linha de cabeçalho (contém "PROCESSO ECAC" ou "REF. AGIL")
@@ -595,6 +607,34 @@ function processCSV(text){
       + alertasDeadline.map(a=>`• ${a}`).join('<br>');
     showBanner('bannerVencido',true,txt);
   }
+
+  // ── Parseia RET. ADM. para QTD. SAÍDA real ──
+  let qtdSaiRet = 0;
+  if(textRet && textRet.trim()){
+    const rowsRet = parseCSV(textRet);
+    // Encontra header (linha com QTD. SAÍDA)
+    let hIdxRet = -1;
+    for(let i=0;i<Math.min(rowsRet.length,10);i++){
+      if(rowsRet[i].join('|').toUpperCase().includes('QTD')){hIdxRet=i;break;}
+    }
+    if(hIdxRet>=0){
+      const hdRet = rowsRet[hIdxRet].map(h=>h.trim().toUpperCase().replace(/\s+/g,' '));
+      // Aceita "QTD. SAÍDA", "QTD.SAÍDA", "QTD SAIDA", "QTD. SAIDA"
+      let iQtdSai = -1;
+      for(let i=0;i<hdRet.length;i++){
+        if(hdRet[i].includes('QTD')&&(hdRet[i].includes('SA'))){iQtdSai=i;break;}
+      }
+      if(iQtdSai>=0){
+        for(const r of rowsRet.slice(hIdxRet+1)){
+          if(r.length>iQtdSai && r[0] && r[0].trim()!==''){
+            qtdSaiRet += toNum(r[iQtdSai]);
+          }
+        }
+      }
+    }
+  }
+  // Sobrescreve qtdSai com valor real da aba RET. ADM. (se obtido)
+  if(qtdSaiRet > 0) qtdSai = qtdSaiRet;
 
   renderKPIs({processes,qtdEnt,qtdSai,qtdSal,ii,ipi,pis,cof,icm,tot,mul,adu});
   renderTable();
